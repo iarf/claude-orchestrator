@@ -1,0 +1,14 @@
+{
+  "allowedPaths": [
+    "/home/ian/projects/myapp"
+  ],
+  "maxConcurrent": 4,
+  "defaultMaxTurns": 30,
+  "claudeBin": "claude",
+  "model": "",
+  "blockedTools": ["WebFetch", "WebSearch"],
+  "blockedCommands": [
+    "npm\\s+publish",
+    "git\\s+push"
+  ]
+}
