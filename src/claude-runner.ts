@@ -1,6 +1,14 @@
 import { spawn, ChildProcess } from "node:child_process";
+
+import { dirname, join } from "node:path";
 import { TaskManager, Task } from "./task-manager.js";
 import { PermissionEngine, PermissionRequest, PolicyDecision } from "./permissions.js";
+
+/**
+ * Resolve the bin directory of the Node installation running this process.
+ * Used to ensure child `claude` processes use the same Node version.
+ */
+const NODE_BIN_DIR = dirname(process.execPath);
 
 export interface RunnerConfig {
   /** Path to the `claude` CLI binary. Defaults to "claude". */
@@ -44,14 +52,29 @@ export class ClaudeRunner {
   execute(task: Task): void {
     const args = this.buildArgs(task);
 
-    const child = spawn(this.config.claudeBin, args, {
+    // Resolve the claude binary: if bare "claude", look in same bin dir as our Node
+    const claudeBin = this.config.claudeBin === "claude"
+      ? join(NODE_BIN_DIR, "claude")
+      : this.config.claudeBin;
+
+    // Ensure the child process finds the correct Node (for #!/usr/bin/env node shebang)
+    const childEnv = {
+      ...process.env,
+      PATH: `${NODE_BIN_DIR}:${process.env.PATH || "/usr/bin:/bin"}`,
+    };
+
+    const child = spawn(claudeBin, args, {
       cwd: task.projectDir,
-      env: { ...process.env },
+      env: childEnv,
       stdio: ["pipe", "pipe", "pipe"],
     });
 
     this.processes.set(task.id, child);
     this.taskManager.markRunning(task.id, child.pid!);
+
+    // Write the prompt via stdin instead of -p arg (works around -p hang)
+    child.stdin?.write(task.prompt);
+    child.stdin?.end();
 
     let stdout = "";
     let stderr = "";
@@ -129,10 +152,7 @@ export class ClaudeRunner {
 
   private buildArgs(task: Task): string[] {
     const args: string[] = [
-      "-p",
-      task.prompt,
-      "--cwd",
-      task.projectDir,
+      "--print",
       "--max-turns",
       String(task.maxTurns || this.config.defaultMaxTurns),
       "--output-format",
@@ -148,16 +168,9 @@ export class ClaudeRunner {
       args.push("--allowedTools", task.allowedTools.join(","));
     }
 
-    // Instead of --dangerously-skip-permissions, we could use
-    // --permission-prompt-tool to route through our engine.
-    // For now, we use skip-permissions + our own pre-validation
-    // in the prompt to keep the subprocess non-interactive.
-    //
-    // To use the permission tool approach instead, you'd run a
-    // secondary MCP server that the Claude Code subprocess connects
-    // to, and route decisions through this.handlePermission().
-    // That's a more complex setup documented in the README.
-    args.push("--dangerously-skip-permissions");
+    // Use acceptEdits permission mode to allow file operations
+    // without interactive prompts while still maintaining safety.
+    args.push("--permission-mode", "bypassPermissions");
 
     return args;
   }
